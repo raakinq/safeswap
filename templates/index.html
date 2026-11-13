@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SafeSwap — AI deal copilot for Marketplace sellers</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>SafeSwap</h1>
+  <p class="tagline">AI deal copilot for Facebook Marketplace sellers</p>
+  <span id="mode-badge" class="badge mock">MOCK MODE — no real API keys yet</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1 · Your listing</h2>
+    <label>Title <input id="in-title" type="text" placeholder="e.g. Sony WH-1000XM4 headphones"></label>
+    <label>Price <input id="in-price" type="text" placeholder="e.g. 180"></label>
+    <label>Description
+      <textarea id="in-desc" rows="3" placeholder="Condition, what's included, flaws…"></textarea>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2>2 · Buyer messages</h2>
+    <label>Paste the thread
+      <textarea id="in-msgs" rows="6" placeholder="Buyer: Hi, is this still available?&#10;You: Yes it is!&#10;Buyer: …"></textarea>
+    </label>
+    <div class="row">
+      <button id="btn-sample" class="ghost">Load sample deal</button>
+      <button id="btn-analyze" class="primary">Analyze deal</button>
+    </div>
+  </section>
+
+  <section id="results" class="hidden">
+    <div class="card">
+      <h2>3 · Suggested reply <button id="btn-copy" class="ghost small">Copy</button></h2>
+      <p id="out-reply" class="reply"></p>
+    </div>
+
+    <div class="card">
+      <h2>4 · Price coach</h2>
+      <div class="price-row">
+        <div><span class="k">Ask</span><span id="out-ask" class="v"></span></div>
+        <div><span class="k">Target</span><span id="out-target" class="v"></span></div>
+        <div><span class="k">Floor</span><span id="out-floor" class="v"></span></div>
+      </div>
+      <ul id="out-reasoning"></ul>
+    </div>
+
+    <div class="card">
+      <h2>5 · Scam scan</h2>
+      <div id="out-flags"></div>
+    </div>
+
+    <div class="card">
+      <h2>6 · PayPal invoice</h2>
+      <p class="hint" id="invoice-hint">When you agree on a price, invoice the buyer through PayPal.
+        Without PayPal keys configured this returns a <strong>stub</strong> — set <code>PAYPAL_CLIENT_ID</code> /
+        <code>PAYPAL_CLIENT_SECRET</code> and the same button sends a real invoice.</p>
+      <label>Buyer email <input id="inv-email" type="email" placeholder="buyer@example.com"></label>
+      <label>Amount (USD) <input id="inv-amount" type="text" placeholder="165"></label>
+      <button id="btn-invoice" class="primary">Create &amp; send invoice</button>
+      <pre id="out-invoice" class="hidden"></pre>
+    </div>
+
+    <div class="card">
+      <h2>7 · Meetup safety checklist</h2>
+      <ul id="out-checklist" class="checklist"></ul>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>SafeSwap · AI + PayPal Invoicing API · <a href="https://github.com/raakinq/safeswap">repo</a></p>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// Correct the mode badge / invoice hint from the server's real state,
+// so the page never claims mock when PayPal (or AI) is actually live.
+fetch("/api/status").then(r => r.json()).then(s => {
+  const badge = $("mode-badge");
+  const hint = $("invoice-hint");
+  if (s.paypal_live && s.ai_live) {
+    badge.textContent = "LIVE — PayPal sandbox + AI connected";
+    badge.className = "badge live";
+  } else if (s.paypal_live) {
+    badge.textContent = "PAYPAL LIVE (sandbox) — AI on mock replies";
+    badge.className = "badge live";
+  } else if (s.ai_live) {
+    badge.textContent = "AI LIVE — PayPal invoice on stub";
+    badge.className = "badge live";
+  }
+  if (s.paypal_live) {
+    hint.innerHTML = "PayPal sandbox is connected — this button creates and sends a real sandbox invoice to the buyer.";
+  }
+}).catch(() => {});
+
+$("btn-sample").onclick = async () => {
+  const r = await fetch("/api/sample").then(r => r.json());
+  $("in-title").value = r.listing.title;
+  $("in-price").value = r.listing.price;
+  $("in-desc").value = r.listing.description;
+  $("in-msgs").value = r.messages;
+};
+
+$("btn-analyze").onclick = async () => {
+  const btn = $("btn-analyze");
+  btn.disabled = true; btn.textContent = "Analyzing…";
+  try {
+    const r = await fetch("/api/analyze", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        listing: {title: $("in-title").value, price: $("in-price").value, description: $("in-desc").value},
+        messages: $("in-msgs").value
+      })
+    }).then(r => r.json());
+
+    $("out-reply").textContent = r.reply_draft;
+    $("out-ask").textContent = r.price_suggestion.price;
+    $("out-target").textContent = r.price_suggestion.target;
+    $("out-floor").textContent = r.price_suggestion.floor;
+    $("out-reasoning").innerHTML = r.price_suggestion.reasoning.map(x => `<li>${x}</li>`).join("");
+
+    const flags = r.red_flags;
+    $("out-flags").innerHTML = flags.length
+      ? flags.map(f => `
+        <div class="flag ${f.severity}">
+          <strong>${f.severity.toUpperCase()} — ${f.flag}</strong>
+          <p>${f.detail}</p>
+          ${f.quote ? `<code>“${f.quote}”</code>` : ""}
+        </div>`).join("")
+      : `<p class="ok">No red flags in these messages. Still meet safe.</p>`;
+
+    $("out-checklist").innerHTML = r.checklist.map(x => `<li>${x}</li>`).join("");
+    $("results").classList.remove("hidden");
+    $("results").scrollIntoView({behavior: "smooth"});
+  } finally {
+    btn.disabled = false; btn.textContent = "Analyze deal";
+  }
+};
+
+$("btn-copy").onclick = () => {
+  navigator.clipboard.writeText($("out-reply").textContent);
+  $("btn-copy").textContent = "Copied!";
+  setTimeout(() => $("btn-copy").textContent = "Copy", 1500);
+};
+
+$("btn-invoice").onclick = async () => {
+  const btn = $("btn-invoice");
+  btn.disabled = true; btn.textContent = "Working…";
+  try {
+    const r = await fetch("/api/invoice", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        buyer_email: $("inv-email").value,
+        item_title: $("in-title").value,
+        amount: $("inv-amount").value,
+        note: "SafeSwap deal"
+      })
+    }).then(r => r.json());
+    const pre = $("out-invoice");
+    pre.classList.remove("hidden");
+    pre.textContent = JSON.stringify(r, null, 2);
+  } finally {
+    btn.disabled = false; btn.textContent = "Create & send invoice";
+  }
+};
+</script>
+</body>
+</html>
